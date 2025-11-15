@@ -1,0 +1,119 @@
+name: Build WhiteSur GTK Theme
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      color:
+        description: "Theme color"
+        required: false
+        default: "dark"
+      opacity:
+        description: "Opacity level"
+        required: false
+        default: "normal"
+      variant:
+        description: "Theme variant"
+        required: false
+        default: "default"
+      alt:
+        description: "Alt style"
+        required: false
+        default: "normal"
+      scheme:
+        description: "Color scheme"
+        required: false
+        default: "standard"
+      libadwaita:
+        description: "Enable libadwaita theme?"
+        required: false
+        default: "true"
+
+env:
+  COLOR: ${{ github.event.inputs.color || 'dark' }}
+  OPACITY: ${{ github.event.inputs.opacity || 'normal' }}
+  VARIANT: ${{ github.event.inputs.variant || 'default' }}
+  ALT: ${{ github.event.inputs.alt || 'normal' }}
+  SCHEME: ${{ github.event.inputs.scheme || 'standard' }}
+  LIBADWAITA: ${{ github.event.inputs.libadwaita || 'true' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch latest upstream tag
+        id: tag
+        run: |
+          latest=$(curl -s https://api.github.com/repos/vinceliuice/WhiteSur-gtk-theme/releases/latest | jq -r '.tag_name')
+          echo "tag=$latest" >> $GITHUB_OUTPUT
+
+      - name: Checkout WhiteSur upstream at tag
+        uses: actions/checkout@v4
+        with:
+          repository: vinceliuice/WhiteSur-gtk-theme
+          ref: ${{ steps.tag.outputs.tag }}
+          path: upstream
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sassc libglib2.0-dev-bin xmlstarlet dialog gettext glib2.0-bin jq
+
+      - name: Run installer (sandboxed)
+        run: |
+          mkdir -p out
+          mkdir -p tmp-home/.config
+
+          cd upstream
+          chmod +x install.sh
+          
+          ARGS=""
+          if [ "$LIBADWAITA" = "true" ]; then
+            ARGS="--libadwaita"
+          fi
+
+          HOME=$PWD/../tmp-home ./install.sh \
+            --color "$COLOR" \
+            --opacity "$OPACITY" \
+            --theme "$VARIANT" \
+            --alt "$ALT" \
+            --scheme "$SCHEME" \
+            --dest ../out \
+            $ARGS
+
+      - name: Copy GTK4 Libadwaita output
+        run: |
+          echo "Checking tmp-home/.config:"
+          ls -R tmp-home/.config || true
+
+          if [ -d tmp-home/.config/gtk-4.0 ]; then
+            cp -r tmp-home/.config/gtk-4.0 out/gtk-4.0
+          else
+            echo "No gtk-4.0 directory found"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhiteSur-GTK
+          path: out
+
+      - name: Commit theme to branch
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          git switch -C compiled
+          rm -rf themes
+          mv out themes
+
+          git add themes
+          git commit -m "Update ${{ steps.tag.outputs.tag }} ($(date -u '+%Y-%m-%d'))" || echo "No changes"
+          git push origin compiled --force
